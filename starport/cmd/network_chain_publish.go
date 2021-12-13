@@ -2,15 +2,12 @@ package starportcmd
 
 import (
 	"fmt"
-	"sync"
+	"os"
 
-	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 	"github.com/tendermint/starport/starport/pkg/clispinner"
-	"github.com/tendermint/starport/starport/pkg/cosmosaccount"
-	"github.com/tendermint/starport/starport/pkg/events"
-	"github.com/tendermint/starport/starport/pkg/xurl"
 	"github.com/tendermint/starport/starport/services/network"
+	"github.com/tendermint/starport/starport/services/network/networkchain"
 )
 
 const (
@@ -37,7 +34,7 @@ func NewNetworkChainPublish() *cobra.Command {
 	c.Flags().String(flagGenesis, "", "URL to a custom Genesis")
 	c.Flags().Uint64(flagCampaign, 0, "Campaign ID to use for this network")
 	c.Flags().Bool(flagNoCheck, false, "Skip verifying chain's integrity")
-	c.Flags().String(flagFrom, cosmosaccount.DefaultAccount, "Account name to use for sending transactions to SPN")
+	c.Flags().AddFlagSet(flagNetworkFrom())
 	c.Flags().AddFlagSet(flagSetKeyringBackend())
 	c.Flags().AddFlagSet(flagSetHome())
 	c.Flags().AddFlagSet(flagSetYes())
@@ -56,99 +53,75 @@ func networkChainPublishHandler(cmd *cobra.Command, args []string) error {
 		noCheck, _    = cmd.Flags().GetBool(flagNoCheck)
 	)
 
-	s := clispinner.New()
-	defer s.Stop()
-
-	var (
-		wg sync.WaitGroup
-		ev = events.NewBus()
-	)
-	wg.Add(1)
-
-	defer wg.Wait()
-	defer ev.Shutdown()
-
-	go printEvents(&wg, ev, s)
-
-	nb, err := newNetwork(cmd, network.CollectEvents(ev))
+	nb, err := newNetworkBuilder(cmd)
 	if err != nil {
 		return err
 	}
+	defer nb.Cleanup()
 
-	// initialize the blockchain
-	initOptions := initOptionWithHomeFlag(cmd, []network.InitOption{network.MustNotInitializedBefore()})
+	// use source from chosen target.
+	var sourceOption networkchain.SourceOption
 
-	var sourceOption network.SourceOption
-
-	if !xurl.IsLocalPath(source) {
-		switch {
-		case tag != "":
-			sourceOption = network.SourceRemoteTag(source, tag)
-		case branch != "":
-			sourceOption = network.SourceRemoteBranch(source, branch)
-		case hash != "":
-			sourceOption = network.SourceRemoteHash(source, hash)
-		default:
-			sourceOption = network.SourceRemote(source)
-		}
+	switch {
+	case tag != "":
+		sourceOption = networkchain.SourceRemoteTag(source, tag)
+	case branch != "":
+		sourceOption = networkchain.SourceRemoteBranch(source, branch)
+	case hash != "":
+		sourceOption = networkchain.SourceRemoteHash(source, hash)
+	default:
+		sourceOption = networkchain.SourceRemote(source)
 	}
+
+	var initOptions []networkchain.Option
+
+	// use custom genesis from url if given.
+	if genesisURL != "" {
+		initOptions = append(initOptions, networkchain.WithGenesisFromURL(genesisURL))
+	}
+
+	// init in a temp dir.
+	homeDir, err := os.MkdirTemp("", "")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(homeDir)
+
+	initOptions = append(initOptions, networkchain.WithHome(homeDir))
 
 	// init the chain.
-	blockchain, err := nb.Blockchain(cmd.Context(), sourceOption, initOptions...)
+	c, err := nb.Chain(sourceOption, initOptions...)
 	if err != nil {
 		return err
 	}
 
-	var createOptions []network.CreateOption
+	var publishOptions []network.PublishOption
 
 	if genesisURL != "" {
-		createOptions = append(createOptions, network.WithCustomGenesisFromURL(genesisURL))
+		publishOptions = append(publishOptions, network.WithCustomGenesis(genesisURL))
 	}
+
 	if campaign != 0 {
-		createOptions = append(createOptions, network.WithCampaign(campaign))
+		publishOptions = append(publishOptions, network.WithCampaign(campaign))
 	}
 
 	if noCheck {
-		createOptions = append(createOptions, network.WithNoCheck())
-	} else if genesisURL != "" {
-		ok, err := blockchain.IsHomeDirExist()
-		if err != nil {
-			return err
-		}
-
-		if ok && !getYes(cmd) {
-			home, err := blockchain.Home()
-			if err != nil {
-				return err
-			}
-			prompt := promptui.Prompt{
-				Label: fmt.Sprintf("Data directory for blockchain already exists: %s. Would you like to overwrite it",
-					home,
-				),
-				IsConfirm: true,
-			}
-
-			s.Stop()
-			if _, err := prompt.Run(); err != nil {
-				fmt.Println("said no")
-				return nil
-			}
-			s.Start()
-		}
-
-		if err := blockchain.Init(cmd.Context()); err != nil {
-			return err
-		}
+		publishOptions = append(publishOptions, network.WithNoCheck())
+	} else if err := c.Init(cmd.Context()); err != nil { // initialize the chain for checking.
+		return err
 	}
 
-	s.SetText("Publishing...")
-
-	launchID, campaignID, err := blockchain.Publish(cmd.Context(), createOptions...)
+	n, err := nb.Network()
 	if err != nil {
 		return err
 	}
 
-	s.Stop()
+	launchID, campaignID, err := n.Publish(cmd.Context(), c, publishOptions...)
+	if err != nil {
+		return err
+	}
+
+	nb.Spinner.Stop()
 
 	fmt.Printf("%s Network published \n", clispinner.OK)
 	fmt.Printf("%s Launch ID: %d \n", clispinner.Bullet, launchID)
