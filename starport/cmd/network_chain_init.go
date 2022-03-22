@@ -5,9 +5,11 @@ import (
 
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
+
 	"github.com/tendermint/starport/starport/pkg/cliquiz"
 	"github.com/tendermint/starport/starport/pkg/clispinner"
 	"github.com/tendermint/starport/starport/pkg/cosmosaccount"
+	"github.com/tendermint/starport/starport/pkg/cosmosutil"
 	"github.com/tendermint/starport/starport/services/chain"
 	"github.com/tendermint/starport/starport/services/network"
 	"github.com/tendermint/starport/starport/services/network/networkchain"
@@ -20,6 +22,8 @@ const (
 	flagValidatorSecurityContact = "validator-security-contact"
 	flagValidatorMoniker         = "validator-moniker"
 	flagValidatorIdentity        = "validator-identity"
+	flagValidatorSelfDelegation  = "validator-self-delegation"
+	flagValidatorGasPrice        = "validator-gas-price"
 )
 
 // NewNetworkChainInit returns a new command to initialize a chain from a published chain ID
@@ -30,18 +34,18 @@ func NewNetworkChainInit() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE:  networkChainInitHandler,
 	}
-
 	c.Flags().String(flagValidatorAccount, cosmosaccount.DefaultAccount, "Account for the chain validator")
-	c.Flags().String(flagValidatorWebsite, "", "Associate a website to the validator")
-	c.Flags().String(flagValidatorDetails, "", "Provide details about the validator")
-	c.Flags().String(flagValidatorSecurityContact, "", "Provide a validator security contact email")
-	c.Flags().String(flagValidatorMoniker, "", "Provide a custom validator moniker")
-	c.Flags().String(flagValidatorIdentity, "", "Provide a validator identity signature (ex. UPort or Keybase)")
+	c.Flags().String(flagValidatorWebsite, "", "Associate a website with the validator")
+	c.Flags().String(flagValidatorDetails, "", "Details about the validator")
+	c.Flags().String(flagValidatorSecurityContact, "", "Validator security contact email")
+	c.Flags().String(flagValidatorMoniker, "", "Custom validator moniker")
+	c.Flags().String(flagValidatorIdentity, "", "Validator identity signature (ex. UPort or Keybase)")
+	c.Flags().String(flagValidatorSelfDelegation, "", "Validator minimum self delegation")
+	c.Flags().String(flagValidatorGasPrice, "", "Validator gas price")
 	c.Flags().AddFlagSet(flagNetworkFrom())
 	c.Flags().AddFlagSet(flagSetHome())
 	c.Flags().AddFlagSet(flagSetKeyringBackend())
 	c.Flags().AddFlagSet(flagSetYes())
-
 	return c
 }
 
@@ -53,7 +57,7 @@ func networkChainInitHandler(cmd *cobra.Command, args []string) error {
 	defer nb.Cleanup()
 
 	// parse launch ID
-	launchID, err := network.ParseLaunchID(args[0])
+	launchID, err := network.ParseID(args[0])
 	if err != nil {
 		return err
 	}
@@ -105,8 +109,18 @@ func networkChainInitHandler(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	genesisPath, err := c.GenesisPath()
+	if err != nil {
+		return err
+	}
+
+	genesis, err := cosmosutil.ParseGenesis(genesisPath)
+	if err != nil {
+		return err
+	}
+
 	// ask validator information.
-	v, err := askValidatorInfo(cmd)
+	v, err := askValidatorInfo(cmd, genesis.StakeDenom)
 	if err != nil {
 		return err
 	}
@@ -121,7 +135,7 @@ func networkChainInitHandler(cmd *cobra.Command, args []string) error {
 }
 
 // askValidatorInfo prompts to the user questions to query validator information
-func askValidatorInfo(cmd *cobra.Command) (chain.Validator, error) {
+func askValidatorInfo(cmd *cobra.Command, stakeDenom string) (chain.Validator, error) {
 	var (
 		account, _         = cmd.Flags().GetString(flagValidatorAccount)
 		website, _         = cmd.Flags().GetString(flagValidatorWebsite)
@@ -129,8 +143,12 @@ func askValidatorInfo(cmd *cobra.Command) (chain.Validator, error) {
 		securityContact, _ = cmd.Flags().GetString(flagValidatorSecurityContact)
 		moniker, _         = cmd.Flags().GetString(flagValidatorMoniker)
 		identity, _        = cmd.Flags().GetString(flagValidatorIdentity)
+		selfDelegation, _  = cmd.Flags().GetString(flagValidatorSelfDelegation)
+		gasPrice, _        = cmd.Flags().GetString(flagValidatorGasPrice)
 	)
-
+	if gasPrice == "" {
+		gasPrice = "0" + stakeDenom
+	}
 	v := chain.Validator{
 		Name:              account,
 		Website:           website,
@@ -138,8 +156,8 @@ func askValidatorInfo(cmd *cobra.Command) (chain.Validator, error) {
 		Moniker:           moniker,
 		Identity:          identity,
 		SecurityContact:   securityContact,
-		GasPrices:         "0stake",
-		MinSelfDelegation: "1",
+		MinSelfDelegation: selfDelegation,
+		GasPrices:         gasPrice,
 	}
 
 	questions := append([]cliquiz.Question{},

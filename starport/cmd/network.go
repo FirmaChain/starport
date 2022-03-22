@@ -5,6 +5,7 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
+
 	"github.com/tendermint/starport/starport/pkg/clispinner"
 	"github.com/tendermint/starport/starport/pkg/cosmosaccount"
 	"github.com/tendermint/starport/starport/pkg/cosmosclient"
@@ -12,6 +13,7 @@ import (
 	"github.com/tendermint/starport/starport/pkg/gitpod"
 	"github.com/tendermint/starport/starport/services/network"
 	"github.com/tendermint/starport/starport/services/network/networkchain"
+	"github.com/tendermint/starport/starport/services/network/networktypes"
 )
 
 var (
@@ -54,12 +56,14 @@ func NewNetwork() *cobra.Command {
 	c.PersistentFlags().BoolVar(&local, flagLocal, false, "Use local SPN network")
 	c.PersistentFlags().BoolVar(&nightly, flagNightly, false, "Use nightly SPN network")
 	c.PersistentFlags().StringVar(&spnNodeAddress, flagSPNNodeAddress, spnNodeAddressAlpha, "SPN node address")
-	c.PersistentFlags().StringVar(&spnFaucetAddress, flagSPNFaucetAddress, spnFaucetAddressAlpha, "SPN Faucet address")
+	c.PersistentFlags().StringVar(&spnFaucetAddress, flagSPNFaucetAddress, spnFaucetAddressAlpha, "SPN faucet address")
 
 	// add sub commands.
 	c.AddCommand(
 		NewNetworkChain(),
+		NewNetworkCampaign(),
 		NewNetworkRequest(),
+		NewNetworkReward(),
 	)
 
 	return c
@@ -113,11 +117,17 @@ func (n NetworkBuilder) Chain(source networkchain.SourceOption, options ...netwo
 func (n NetworkBuilder) Network(options ...network.Option) (network.Network, error) {
 	options = append(options, network.CollectEvents(n.ev))
 
-	account, err := cosmos.AccountRegistry.GetByName(getFrom(n.cmd))
-	if err != nil {
-		return network.Network{}, errors.Wrap(err, "make sure that this account exists, use 'starport account -h' to manage accounts")
+	var (
+		err     error
+		from    = getFrom(n.cmd)
+		account = cosmosaccount.Account{}
+	)
+	if from != "" {
+		account, err = cosmos.AccountRegistry.GetByName(getFrom(n.cmd))
+		if err != nil {
+			return network.Network{}, errors.Wrap(err, "make sure that this account exists, use 'starport account -h' to manage accounts")
+		}
 	}
-
 	return network.New(*cosmos, account, options...)
 }
 
@@ -130,7 +140,7 @@ func (n NetworkBuilder) Cleanup() {
 func getNetworkCosmosClient(cmd *cobra.Command) (cosmosclient.Client, error) {
 	// check preconfigured networks
 	if nightly && local {
-		return cosmosclient.Client{}, errors.New("local and nightly networks can't be specified in the same command")
+		return cosmosclient.Client{}, errors.New("local and nightly networks can't both be specified in the same command, specify local or nightly")
 	}
 	if local {
 		spnNodeAddress = spnNodeAddressLocal
@@ -143,8 +153,8 @@ func getNetworkCosmosClient(cmd *cobra.Command) (cosmosclient.Client, error) {
 	cosmosOptions := []cosmosclient.Option{
 		cosmosclient.WithHome(cosmosaccount.KeyringHome),
 		cosmosclient.WithNodeAddress(spnNodeAddress),
-		cosmosclient.WithAddressPrefix(networkchain.SPN),
-		cosmosclient.WithUseFaucet(spnFaucetAddress, networkchain.SPNDenom, 5),
+		cosmosclient.WithAddressPrefix(networktypes.SPN),
+		cosmosclient.WithUseFaucet(spnFaucetAddress, networktypes.SPNDenom, 5),
 		cosmosclient.WithKeyringServiceName(cosmosaccount.KeyringServiceName),
 	}
 
@@ -156,7 +166,9 @@ func getNetworkCosmosClient(cmd *cobra.Command) (cosmosclient.Client, error) {
 	if gitpod.IsOnGitpod() {
 		keyringBackend = cosmosaccount.KeyringTest
 	}
-	cosmosOptions = append(cosmosOptions, cosmosclient.WithKeyringBackend(keyringBackend))
+	if keyringBackend != "" {
+		cosmosOptions = append(cosmosOptions, cosmosclient.WithKeyringBackend(keyringBackend))
+	}
 
 	// init cosmos client only once on start in order to spnclient to
 	// reuse unlocked keyring in the following steps.

@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
 	"github.com/tendermint/starport/starport/services/network/networkchain"
+	"github.com/tendermint/starport/starport/services/network/networktypes"
 )
 
 func TestChainHome(t *testing.T) {
@@ -14,8 +16,8 @@ func TestChainHome(t *testing.T) {
 	require.NoError(t, err)
 
 	chainHome := networkchain.ChainHome(0)
-	require.Equal(t, filepath.Join(home, networkchain.SPN, "0"), chainHome)
+	require.Equal(t, filepath.Join(home, networktypes.SPN, "0"), chainHome)
 
 	chainHome = networkchain.ChainHome(10)
-	require.Equal(t, filepath.Join(home, networkchain.SPN, "10"), chainHome)
+	require.Equal(t, filepath.Join(home, networktypes.SPN, "10"), chainHome)
 }
